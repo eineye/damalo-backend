@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: damal-backend
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-6
+      - key: EMBEDDING_MODEL
+        value: paraphrase-multilingual-MiniLM-L12-v2
+      - key: TOP_K
+        value: "5"
+      - key: SIMILARITY_THRESHOLD
+        value: "0.3"
+      - key: KAKAO_SKILL_SECRET
+        sync: false
