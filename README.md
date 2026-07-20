@@ -82,13 +82,78 @@ curl -X POST http://localhost:8000/stt \
 한국어 산업 용어 인식률이 낮으면 `app/routers/stt.py`의 `transcribe_local`을
 네이버 Clova Speech 등 유상 API로 교체하세요(파일 내 예시 주석 참고).
 
-## 6. 카카오 오픈빌더 연결
+## 6. 현장 공통 가이드/사규 문서 - 입력 토큰 비용 절감 (Claude 프롬프트 캐싱)
+
+안전수칙, 사규처럼 **자주 반복 질문되는 대용량 정적 문서**는 개별 노하우(RAG)와 별도 경로로 등록해서
+질문마다 문서 전체를 다시 과금하지 않도록 캐싱합니다. 별도 API 키나 외부 서비스 없이 지금 쓰는
+Anthropic API 안에서 바로 동작합니다 (`cache_control` 파라미터만 추가).
+
+**등록**
+```bash
+curl -X POST http://localhost:8000/guides \
+  -H "Content-Type: application/json" \
+  -d '{
+        "tenant_id": "<tenant_id>",
+        "title": "안전보건관리규정",
+        "content": "<규정 전문 텍스트, 길수록 캐싱 효과가 큼>"
+      }'
+```
+
+**질문**
+```bash
+curl -X POST http://localhost:8000/guides/<guide_id>/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "화기 작업 시 필요한 허가 절차는?"}'
+```
+
+응답의 `usage`에서 실제 절감 효과를 바로 확인할 수 있습니다:
+```json
+{
+  "answer": "...",
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 180,
+    "cache_read_input_tokens": 15000,     // 캐시에서 읽음 - 정가의 10%만 과금
+    "cache_creation_input_tokens": 0       // 최초 1회 호출에서만 값이 생김 (정가의 1.25~2배)
+  }
+}
+```
+같은 문서로 두 번째 질문부터 `cache_creation_input_tokens`는 0이 되고 `cache_read_input_tokens`가
+채워지면서, 그 부분 입력 비용이 약 90% 절감됩니다.
+
+**참고**
+- 캐시는 문서 내용이 100% 동일할 때만 적중합니다. 문서를 수정하면 다음 호출은 다시 "쓰기" 비용이 듭니다.
+- 문서가 너무 짧으면(대략 1,000~4,000토큰 미만, 모델마다 다름) 캐싱 자체가 걸리지 않고 매번 정상 과금됩니다 - 정말 긴 정적 문서에만 효과가 있습니다.
+- 기본 TTL은 `.env`의 `GUIDE_CACHE_TTL`로 조절 (`5m`=무료 기본값, `1h`=쓰기 비용 2배지만 오래 유지). 질문이 5분 넘게 뜸하면 `1h`을 권장합니다.
+
+## 7. 카카오 오픈빌더 연결
 1. 카카오 i 오픈빌더 콘솔에서 봇 생성
 2. 스킬(Skill) 등록 시 URL을 `https://<배포도메인>/kakao/webhook/<tenant_id>` 로 설정
 3. 폴백 블록(정해진 시나리오에 없는 발화)에 이 스킬을 연결
 4. 공장마다 별도 봇(또는 별도 tenant_id)을 두면 지식베이스가 자동으로 격리됩니다
 
-## 7. 다음 단계 (프로토타입 → 실서비스)
+## 8. Dify로 만든 챗봇을 카카오톡에 연결 (자체 RAG 챗봇과 별개)
+
+Dify는 카카오톡 채널을 기본 지원하지 않아서, 이 백엔드가 중계 역할을 합니다.
+
+1. Dify 앱 화면 → 왼쪽 메뉴 **API 접근(API Access)** → API 키 발급
+2. Render(또는 배포 환경) 환경변수에 추가:
+   ```
+   DIFY_API_KEY=app-xxxxxxxxxxxxxxxx
+   DIFY_API_BASE=https://api.dify.ai/v1   # 셀프호스팅이면 그 서버 주소
+   ```
+3. 카카오 i 오픈빌더 콘솔 → 스킬 URL을 다음으로 등록:
+   ```
+   https://<배포도메인>/kakao-dify/webhook/<tenant_id>
+   ```
+4. 폴백 블록에 이 스킬 연결
+
+`tenant_id`는 자체 RAG 챗봇과 마찬가지로 공장/채널 구분용 임의 값이면 됩니다 (Dify 쪽 대화 자체는
+`user` 파라미터로 카카오 사용자별로 분리되고, `dify_sessions` 테이블이 대화 맥락(conversation_id)을
+자동으로 이어줍니다). 자체 RAG 챗봇(`/kakao/webhook/...`)과 Dify 챗봇(`/kakao-dify/webhook/...`)
+중 하나만 카카오 스킬에 연결하시면 됩니다 - 같은 오픈빌더 봇에 폴백을 두 개 등록할 순 없어요.
+
+## 9. 다음 단계 (프로토타입 → 실서비스)
 - STT 연동: 음성/영상 업로드 → Clova Speech 등으로 변환 → `/contents`로 전송하는 워커 추가
 - 비동기 처리: 임베딩/STT는 Celery/RQ 등 큐로 분리 (현재는 동기 처리)
 - 인증: 관리자 API에 JWT 인증 추가, 카카오 webhook에 시크릿 검증 추가

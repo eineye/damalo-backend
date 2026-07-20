@@ -68,6 +68,7 @@ class ContentChunk(Base):
 
     content = relationship("ExpertContent", back_populates="chunks")
 
+
 class CompanyGuide(Base):
     """현장 공통 가이드 / 사규 등 정적 대용량 문서.
     개별 노하우(ExpertContent)와 달리 청킹·임베딩하지 않고,
@@ -82,6 +83,19 @@ class CompanyGuide(Base):
     content = Column(Text, nullable=False)  # 가이드/사규 전문 (내용이 바뀌면 캐시가 자동으로 미스 처리됨)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DifySession(Base):
+    """카카오톡 사용자 ↔ Dify 대화(conversation_id) 매핑.
+    Dify는 대화 맥락을 conversation_id로 관리하므로, 같은 사용자가 이어서 질문할 때
+    이걸 다시 넘겨줘야 대화가 끊기지 않는다."""
+    __tablename__ = "dify_sessions"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    tenant_id = Column(UUID(as_uuid=False), ForeignKey("tenants.id"), nullable=False)
+    kakao_user_key = Column(String(200), nullable=False)
+    dify_conversation_id = Column(String(200), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

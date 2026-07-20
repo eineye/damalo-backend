@@ -86,39 +86,6 @@ def retrieve(db: Session, tenant_id: str, question: str, top_k: int | None = Non
     return results
 
 
-def generate_answer(question: str, retrieved: list[dict]) -> dict:
-    """검색된 컨텍스트를 근거로 LLM 답변 생성."""
-    if not retrieved:
-        return {
-            "answer": "관련 정보가 아직 등록되어 있지 않습니다. 담당 관리자에게 문의해 주세요.",
-            "sources": [],
-        }
-
-    context_block = "\n\n".join(
-        f"[자료 {i+1}] (작성자: {r['author']}, 공정: {r.get('process_tag') or '미분류'})\n{r['text']}"
-        for i, r in enumerate(retrieved)
-    )
-
-    if _client is None:
-        # ANTHROPIC_API_KEY 미설정 시 검색 결과만이라도 반환 (개발용 폴백)
-        return {
-            "answer": "[LLM 미연결 - 개발 모드] 관련 자료:\n" + context_block,
-            "sources": retrieved,
-        }
-
-    message = _client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=800,
-        system=SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": f"[참고 자료]\n{context_block}\n\n[질문]\n{question}",
-        }],
-    )
-    answer_text = "".join(
-        block.text for block in message.content if block.type == "text"
-    )
-    return {"answer": answer_text, "sources": retrieved}
 GUIDE_SYSTEM_PROMPT = """당신은 사내 공통 가이드/사규 문서를 안내하는 도우미입니다.
 아래 [문서]에 있는 내용만 근거로 답변하세요. 문서에 없는 내용은 "문서에서 찾을 수 없습니다"라고 답하세요.
 답변은 간결하게, 관련 조항이나 절차명을 함께 언급하세요.
@@ -171,3 +138,36 @@ def answer_guide_question(guide_content: str, question: str) -> dict:
             "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
         },
     }
+def generate_answer(question: str, retrieved: list[dict]) -> dict:
+    """검색된 컨텍스트를 근거로 LLM 답변 생성."""
+    if not retrieved:
+        return {
+            "answer": "관련 정보가 아직 등록되어 있지 않습니다. 담당 관리자에게 문의해 주세요.",
+            "sources": [],
+        }
+
+    context_block = "\n\n".join(
+        f"[자료 {i+1}] (작성자: {r['author']}, 공정: {r.get('process_tag') or '미분류'})\n{r['text']}"
+        for i, r in enumerate(retrieved)
+    )
+
+    if _client is None:
+        # ANTHROPIC_API_KEY 미설정 시 검색 결과만이라도 반환 (개발용 폴백)
+        return {
+            "answer": "[LLM 미연결 - 개발 모드] 관련 자료:\n" + context_block,
+            "sources": retrieved,
+        }
+
+    message = _client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=800,
+        system=SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": f"[참고 자료]\n{context_block}\n\n[질문]\n{question}",
+        }],
+    )
+    answer_text = "".join(
+        block.text for block in message.content if block.type == "text"
+    )
+    return {"answer": answer_text, "sources": retrieved}
