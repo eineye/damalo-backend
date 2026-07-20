@@ -68,6 +68,22 @@ class ContentChunk(Base):
 
     content = relationship("ExpertContent", back_populates="chunks")
 
+class CompanyGuide(Base):
+    """현장 공통 가이드 / 사규 등 정적 대용량 문서.
+    개별 노하우(ExpertContent)와 달리 청킹·임베딩하지 않고,
+    질의응답 시 Claude 프롬프트 캐싱(cache_control)으로 통째로 재사용해
+    반복 질문마다 드는 입력 토큰 비용을 절감한다."""
+    __tablename__ = "company_guides"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    tenant_id = Column(UUID(as_uuid=False), ForeignKey("tenants.id"), nullable=False)
+
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)  # 가이드/사규 전문 (내용이 바뀌면 캐시가 자동으로 미스 처리됨)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class QueryLog(Base):
     """카카오톡 사용자 질의응답 로그 - 관리자 대시보드 통계/피드백 루프에 사용"""
