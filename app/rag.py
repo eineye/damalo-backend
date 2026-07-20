@@ -119,3 +119,55 @@ def generate_answer(question: str, retrieved: list[dict]) -> dict:
         block.text for block in message.content if block.type == "text"
     )
     return {"answer": answer_text, "sources": retrieved}
+GUIDE_SYSTEM_PROMPT = """당신은 사내 공통 가이드/사규 문서를 안내하는 도우미입니다.
+아래 [문서]에 있는 내용만 근거로 답변하세요. 문서에 없는 내용은 "문서에서 찾을 수 없습니다"라고 답하세요.
+답변은 간결하게, 관련 조항이나 절차명을 함께 언급하세요.
+"""
+
+
+def answer_guide_question(guide_content: str, question: str) -> dict:
+    """현장 공통 가이드/사규 문서 질의응답 - Claude 프롬프트 캐싱 적용.
+
+    같은 tenant의 같은 문서(guide_content)로 반복 질문이 들어오면,
+    두 번째 호출부터는 문서 부분이 캐시에서 읽혀 입력 토큰 비용이 약 90% 절감된다.
+    (문서가 1개 모델의 최소 캐시 토큰 기준(보통 1024~4096 토큰) 이상일 때만 실제로 캐싱됨 -
+     그보다 짧은 문서는 cache_control을 붙여도 정상 응답은 되지만 캐시 효과는 없다.)
+    """
+    if _client is None:
+        return {
+            "answer": "[LLM 미연결 - 개발 모드] ANTHROPIC_API_KEY를 설정해주세요.",
+            "usage": None,
+        }
+
+    # SDK 버전에 따라 1h TTL이 베타 헤더를 요구할 수 있어 안전하게 항상 포함시킴
+    # (5m 기본 TTL만 쓸 경우엔 무시되어도 무해함)
+    extra_headers = {"anthropic-beta": "extended-cache-ttl-2025-04-11"} if settings.guide_cache_ttl == "1h" else {}
+
+    message = _client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=800,
+        extra_headers=extra_headers,
+        system=[
+            {"type": "text", "text": GUIDE_SYSTEM_PROMPT},
+            {
+                "type": "text",
+                "text": f"[문서]\n{guide_content}",
+                "cache_control": {"type": "ephemeral", "ttl": settings.guide_cache_ttl},
+            },
+        ],
+        messages=[{"role": "user", "content": question}],
+    )
+    answer_text = "".join(block.text for block in message.content if block.type == "text")
+
+    usage = message.usage
+    return {
+        "answer": answer_text,
+        "usage": {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            # 캐시에서 읽은 토큰 (거의 무료, 정가의 0.1배) - 클수록 절감 효과가 큰 것
+            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+            # 이번 요청에서 새로 캐시에 쓴 토큰 (정가의 1.25~2배, 최초 1회만 발생)
+            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        },
+    }
