@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, engine
-from app.routers import content, query, kakao, admin, stt
+from app.routers import content, query, kakao, admin, stt, guides
 
 app = FastAPI(
     title="제조 노하우 RAG 챗봇 API",
@@ -22,6 +22,7 @@ app.include_router(query.router)
 app.include_router(kakao.router)
 app.include_router(admin.router)
 app.include_router(stt.router)
+app.include_router(guides.router)
 
 
 @app.on_event("startup")
