@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, engine
 from app.routers import content, query, kakao, admin, stt, guides, kakao_dify
-from app.embeddings import get_model
 
 app = FastAPI(
     title="제조 노하우 RAG 챗봇 API",
@@ -31,10 +30,10 @@ app.include_router(kakao_dify.router)
 def on_startup():
     # 최초 실행 시 테이블 생성 (운영에서는 Alembic 마이그레이션 권장)
     Base.metadata.create_all(bind=engine)
-    # 임베딩 모델을 서버 기동 시점에 미리 로딩(warm-up).
-    # 이렇게 안 하면 잠들었다 깨어난 뒤 첫 업로드/질문 요청이 모델 다운로드+로딩까지
-    # 떠안게 되어 사용자 입장에서 "멈춘 것처럼" 느껴진다.
-    get_model()
+    # 참고: 임베딩 모델을 여기서 미리 로딩(warm-up)하면 첫 요청 지연은 줄어들지만,
+    # Render 무료 요금제(512MB)에서는 그 자체로 메모리 초과(OOM)를 일으켜 서버가
+    # 아예 못 뜰 수 있다 (실제로 겪은 문제). 그래서 지연 로딩(첫 실제 사용 시점) 방식을
+    # 유지한다. 더 큰 메모리의 유료 플랜으로 옮기면 그때 다시 warm-up을 켜는 걸 권장.
 
 
 @app.get("/health")
