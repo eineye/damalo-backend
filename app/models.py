@@ -36,7 +36,7 @@ class ExpertContent(Base):
     tenant_id = Column(UUID(as_uuid=False), ForeignKey("tenants.id"), nullable=False)
 
     author_name = Column(String(100), nullable=False)
-    content_type = Column(Enum("voice", "text", "video", name="content_type"), nullable=False)
+    content_type = Column(Enum("voice", "text", "video", "document", name="content_type"), nullable=False)
 
     raw_text = Column(Text, nullable=False)          # STT 결과 또는 직접 입력한 텍스트
     media_url = Column(String(500), nullable=True)   # 원본 음성/영상 파일 링크 (S3 등)

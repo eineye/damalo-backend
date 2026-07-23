@@ -110,20 +110,31 @@ def answer_guide_question(guide_content: str, question: str) -> dict:
     # (5m 기본 TTL만 쓸 경우엔 무시되어도 무해함)
     extra_headers = {"anthropic-beta": "extended-cache-ttl-2025-04-11"} if settings.guide_cache_ttl == "1h" else {}
 
-    message = _client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=800,
-        extra_headers=extra_headers,
-        system=[
-            {"type": "text", "text": GUIDE_SYSTEM_PROMPT},
-            {
-                "type": "text",
-                "text": f"[문서]\n{guide_content}",
-                "cache_control": {"type": "ephemeral", "ttl": settings.guide_cache_ttl},
-            },
-        ],
-        messages=[{"role": "user", "content": question}],
-    )
+    # cache_control은 5m이 기본값이라 ttl 키 없이도 동작함.
+    # 1h를 명시적으로 설정했을 때만 ttl 키를 추가 (구버전 SDK와의 호환성을 위해 불필요한 필드는 생략).
+    cache_control = {"type": "ephemeral"}
+    if settings.guide_cache_ttl == "1h":
+        cache_control["ttl"] = "1h"
+
+    try:
+        message = _client.messages.create(
+            model=settings.anthropic_model,
+            max_tokens=800,
+            extra_headers=extra_headers,
+            system=[
+                {"type": "text", "text": GUIDE_SYSTEM_PROMPT},
+                {
+                    "type": "text",
+                    "text": f"[문서]\n{guide_content}",
+                    "cache_control": cache_control,
+                },
+            ],
+            messages=[{"role": "user", "content": question}],
+        )
+    except Exception as e:
+        # 원인을 바로 응답으로 볼 수 있도록 노출 (운영 단계에서는 로그로만 남기고 감추는 걸 권장)
+        return {"answer": f"[오류] Claude 호출 실패: {e}", "usage": None}
+
     answer_text = "".join(block.text for block in message.content if block.type == "text")
 
     usage = message.usage
