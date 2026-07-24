@@ -11,10 +11,10 @@ _client = Anthropic(api_key=settings.anthropic_api_key) if settings.anthropic_ap
 
 SYSTEM_PROMPT = """당신은 제조 현장의 숙련 기술자 노하우를 초보자에게 안내하는 도우미입니다.
 반드시 아래 [참고 자료]에 있는 내용만 근거로 답변하세요.
-- [참고 자료]에 없는 내용은 추측하지 말고 "관련 정보가 없습니다. 담당 관리자에게 문의하세요"라고 답하세요.
+- [참고 자료]가 질문과 실제로 관련이 없다면, 추측하지 말고 "관련 정보가 없습니다. 담당 관리자에게 문의하세요"라고만 답하고, 이 경우 출처는 언급하지 마세요 (실제로 답변에 쓰지 않은 자료를 참고했다고 표시하면 안 됩니다).
+- [참고 자료]로 실제로 답변했을 때만, 답변 끝에 어떤 자료(작성자/공정명)를 참고했는지 간단히 밝히세요.
 - 고전압, 화학물질, 추락 위험 등 안전과 관련된 질문에는 반드시 "정식 안전교육 자료와 담당자 확인을 우선하세요"라는 안내를 함께 포함하세요.
 - 답변은 현장에서 바로 쓸 수 있도록 간결하고 단계적으로 작성하세요.
-- 답변 끝에 어떤 자료(작성자/공정명)를 참고했는지 간단히 밝히세요.
 """
 
 
@@ -32,6 +32,30 @@ def chunk_text(text: str, max_chars: int = 400, overlap: int = 50) -> list[str]:
     if current.strip():
         chunks.append(current.strip())
     return chunks or [text]
+
+
+def ingest_json_entries(db: Session, content: ExpertContent, entries: list[dict]) -> int:
+    """[{"title":..., "category":..., "content":...}, ...] 형태의 구조화된 문서를
+    항목 단위 그대로 청크로 저장한다. 일반 chunk_text()의 '문자 수 기준 자르기'와 달리
+    이미 의미 단위로 잘 나뉜 항목을 다시 잘게 쪼개지 않아 검색 정확도가 훨씬 높다."""
+    texts = []
+    for entry in entries:
+        title = entry.get("title", "")
+        category = entry.get("category", "")
+        body = entry.get("content", "")
+        header = " / ".join(p for p in [category, title] if p)
+        texts.append(f"{header}\n{body}" if header else body)
+
+    vectors = embed_batch(texts)
+    for text, vector in zip(texts, vectors):
+        db.add(ContentChunk(
+            content_id=content.id,
+            tenant_id=content.tenant_id,
+            chunk_text=text,
+            embedding=vector,
+        ))
+    db.commit()
+    return len(texts)
 
 
 def ingest_content(db: Session, content: ExpertContent) -> int:

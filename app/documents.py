@@ -3,7 +3,22 @@
 관리자 웹의 대량 업로드 기능에서 사용 (음성/영상 STT와는 별개 경로).
 """
 import io
+import json
 from fastapi import HTTPException
+
+
+def try_parse_json_entries(data: bytes) -> list[dict] | None:
+    """업로드된 파일이 [{"title":..., "content":...}, ...] 형태의 JSON이면 그 목록을 반환.
+    JSON이 아니거나 형태가 안 맞으면 None (일반 텍스트로 처리하도록)."""
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    if not all(isinstance(item, dict) and "content" in item for item in parsed):
+        return None
+    return parsed
 
 
 def extract_text(filename: str, data: bytes) -> str:
@@ -13,7 +28,7 @@ def extract_text(filename: str, data: bytes) -> str:
         return _extract_pdf(data)
     if ext == "docx":
         return _extract_docx(data)
-    if ext in ("txt", "md"):
+    if ext in ("txt", "md", "json"):
         return data.decode("utf-8", errors="ignore")
 
     raise HTTPException(status_code=422, detail=f"지원하지 않는 파일 형식입니다: .{ext} (pdf, docx, txt, md만 가능)")

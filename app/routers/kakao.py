@@ -43,8 +43,15 @@ def _kakao_text_response(text: str, query_log_id: str) -> dict:
 def _process_and_callback(tenant_id: str, utterance: str, user_key: str, callback_url: str):
     """백그라운드에서 RAG 처리 후 콜백 URL로 결과 전송.
     요청-응답 사이클이 끝난 뒤 실행되므로, 요청에 딸려온 DB 세션을 재사용하지 않고
-    새 세션을 직접 연다 (FastAPI 백그라운드 태스크의 표준 패턴)."""
+    새 세션을 직접 연다 (FastAPI 백그라운드 태스크의 표준 패턴).
+
+    전체를 try/except로 감싸서, 처리 중 어떤 예외가 나든 카카오톡에 "무응답"이 아니라
+    최소한 안내 메시지라도 가도록 한다 (콜백 URL 유효시간은 1분 - 그 안에 못 끝내면
+    이 안내 메시지 전송조차 실패할 수 있으니, 서술형처럼 오래 걸리는 질문이 잦다면
+    TOP_K/max_tokens를 낮춰 처리 시간을 줄이는 것도 고려)."""
     db = SessionLocal()
+    answer_text = None
+    log_id = None
     try:
         retrieved = retrieve(db, tenant_id, utterance)
         result = generate_answer(utterance, retrieved)
@@ -60,14 +67,21 @@ def _process_and_callback(tenant_id: str, utterance: str, user_key: str, callbac
         db.add(log)
         db.commit()
         db.refresh(log)
-
-        payload = _kakao_text_response(result["answer"], log.id)
-        try:
-            httpx.post(callback_url, json=payload, timeout=30.0)
-        except Exception:
-            pass  # 콜백 URL 유효시간(1분)이 지났거나 네트워크 오류 - 재시도 불가, 로그만 남기고 무시
+        answer_text = result["answer"]
+        log_id = log.id
+    except Exception as e:
+        print(f"[kakao callback] 처리 중 오류: {e}")
+        answer_text = "죄송해요, 답변을 생성하는 중 오류가 발생했어요. 다시 질문해주시겠어요?"
+        log_id = "error"
     finally:
         db.close()
+
+    payload = _kakao_text_response(answer_text, log_id)
+    try:
+        httpx.post(callback_url, json=payload, timeout=30.0)
+    except Exception as e:
+        # 콜백 URL 유효시간(1분)이 지났거나 네트워크 오류 - 재시도 불가
+        print(f"[kakao callback] 콜백 전송 실패: {e}")
 
 
 @router.post("/webhook/{tenant_id}")

@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import ExpertContent
 from app.schemas import ContentCreate, ContentReview
-from app.rag import ingest_content
-from app.documents import extract_text
+from app.rag import ingest_content, ingest_json_entries
+from app.documents import extract_text, try_parse_json_entries
 
 router = APIRouter(prefix="/contents", tags=["contents"])
 
@@ -37,7 +37,8 @@ async def upload_document(
     ExpertContent로 등록한다 (content_type='document'). auto_approve=True(기본값)면
     등록과 동시에 승인 처리되어 바로 청킹+임베딩까지 진행된다 (관리자 본인이 올리는 공식 문서라는 전제)."""
     raw = await file.read()
-    text = extract_text(file.filename, raw)
+    json_entries = try_parse_json_entries(raw)
+    text = extract_text(file.filename, raw)  # 원문은 그대로 저장 (관리자 화면에서 검수/확인용)
 
     content = ExpertContent(
         tenant_id=tenant_id,
@@ -57,12 +58,17 @@ async def upload_document(
 
     chunk_count = 0
     if content.status == "approved":
-        chunk_count = ingest_content(db, content)
+        chunk_count = (
+            ingest_json_entries(db, content, json_entries)
+            if json_entries is not None
+            else ingest_content(db, content)
+        )
 
     return {
         "id": content.id,
         "filename": file.filename,
         "status": content.status,
+        "format": "json_structured" if json_entries is not None else "text",
         "chars_extracted": len(text),
         "chunks_indexed": chunk_count,
     }
@@ -116,6 +122,11 @@ def review_content(content_id: str, payload: ContentReview, db: Session = Depend
 
     chunk_count = 0
     if payload.status == "approved":
-        chunk_count = ingest_content(db, content)
+        json_entries = try_parse_json_entries(content.raw_text.encode("utf-8"))
+        chunk_count = (
+            ingest_json_entries(db, content, json_entries)
+            if json_entries is not None
+            else ingest_content(db, content)
+        )
 
     return {"id": content.id, "status": content.status, "chunks_indexed": chunk_count}
