@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>다말 관리자</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  html, body { margin: 0; padding: 0; background: #1C1E1F; }
+  body { font-family: system-ui, -apple-system, "Malgun Gothic", sans-serif; }
+  #root { max-width: 760px; margin: 24px auto; padding: 0 16px; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div style="color:#8F8D86;font-family:system-ui,sans-serif;padding:40px;text-align:center;">불러오는 중… (인터넷 연결이 필요합니다)</div>
+</div>
+<div id="fatal-error" style="display:none;color:#D9534F;font-family:system-ui,sans-serif;padding:20px;white-space:pre-wrap;"></div>
+
+<script>
+  window.addEventListener("error", function (e) {
+    var box = document.getElementById("fatal-error");
+    box.style.display = "block";
+    box.textContent = "화면 로딩 중 오류가 발생했습니다:\n" + (e.message || e.error) +
+      "\n\n인터넷 연결을 확인하거나, 회사/기관 네트워크가 cdnjs.cloudflare.com을 차단하고 있는지 확인해주세요.";
+  });
+</script>
+
+<!-- 빌드 도구 없이 브라우저에서 바로 React를 실행하기 위한 CDN -->
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.4/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+/* ---------- 아이콘 (외부 라이브러리 없이 최소 SVG로 직접 구현) ---------- */
+function IconBase({ size = 16, color = "currentColor", children, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      {children}
+    </svg>
+  );
+}
+const Mic = (p) => <IconBase {...p}><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/></IconBase>;
+const FileText = (p) => <IconBase {...p}><path d="M6 2h9l5 5v15H6z"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></IconBase>;
+const FileIcon = (p) => <IconBase {...p}><path d="M6 2h9l5 5v15H6z"/></IconBase>;
+const Video = (p) => <IconBase {...p}><rect x="2" y="6" width="14" height="12" rx="2"/><polygon points="22,8 16,12 22,16"/></IconBase>;
+const Check = (p) => <IconBase {...p}><polyline points="4,12 9,17 20,6"/></IconBase>;
+const X = (p) => <IconBase {...p}><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></IconBase>;
+const ThumbsDown = (p) => <IconBase {...p}><path d="M7 14V4h11l2 5-4 9H10z"/><path d="M7 14H4V4h3"/></IconBase>;
+const Radio = (p) => <IconBase {...p}><circle cx="12" cy="12" r="2"/><path d="M6 12a6 6 0 0 1 12 0"/><path d="M3 12a9 9 0 0 1 18 0"/></IconBase>;
+const Send = (p) => <IconBase {...p}><polygon points="3,11 21,3 13,21 11,13"/></IconBase>;
+const RefreshCw = (p) => <IconBase {...p}><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21,3 21,9 15,9"/></IconBase>;
+const AlertCircle = (p) => <IconBase {...p}><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><circle cx="12" cy="16.3" r="0.7" fill={p.color || "currentColor"}/></IconBase>;
+const UploadCloud = (p) => <IconBase {...p}><path d="M7 18a5 5 0 0 1-1-9.9A6 6 0 0 1 18 8a4.5 4.5 0 0 1-1 9"/><polyline points="8,13 12,9 16,13"/><line x1="12" y1="9" x2="12" y2="19"/></IconBase>;
+const Trash2 = (p) => <IconBase {...p}><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/></IconBase>;
+
+/* ---------- 디자인 토큰 (산업 현장 제어반 컨셉) ---------- */
+const T = {
+  bg: "#1C1E1F", panel: "#232628", panel2: "#2B2F32", border: "#3A3E41",
+  amber: "#E8A33D", teal: "#3FA793", red: "#D9534F", text: "#ECEAE3", muted: "#8F8D86",
+};
+
+/* ---------- 백엔드 연동 설정 ---------- */
+const API_BASE_URL = "https://damal-backend.onrender.com";
+
+const TYPE_ICON = { voice: Mic, text: FileText, video: Video };
+const RISK_LABEL = { low: "낮음", medium: "주의", high: "위험" };
+const RISK_COLOR = { low: T.muted, medium: T.amber, high: T.red };
+
+/* ---------- API 헬퍼 ---------- */
+async function apiGet(path) {
+  const res = await fetch(`${API_BASE_URL}${path}`);
+  if (!res.ok) throw new Error(`서버 오류 (${res.status})`);
+  return res.json();
+}
+async function apiPatch(path, body) {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`서버 오류 (${res.status})`);
+  return res.json();
+}
+async function apiUpload(path, formData) {
+  const res = await fetch(`${API_BASE_URL}${path}`, { method: "POST", body: formData });
+  if (!res.ok) {
+    let detail = `서버 오류 (${res.status})`;
+    try { detail = (await res.json()).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+async function apiDelete(path) {
+  const res = await fetch(`${API_BASE_URL}${path}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`서버 오류 (${res.status})`);
+  return res.json();
+}
+
+/* ---------- 공용 조각 ---------- */
+function Badge({ color, children }) {
+  return (
+    <span style={{
+      fontFamily: "ui-monospace, monospace", fontSize: 11, letterSpacing: 0.5,
+      color, border: `1px solid ${color}`, borderRadius: 4, padding: "2px 6px", textTransform: "uppercase",
+    }}>{children}</span>
+  );
+}
+function StatCard({ label, value, accent }) {
+  return (
+    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "16px 18px", flex: "1 1 150px", minWidth: 150 }}>
+      <div style={{ fontSize: 12, color: T.muted, letterSpacing: 0.5, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: "ui-monospace, monospace", fontSize: 30, fontWeight: 500, color: accent || T.text, marginTop: 6 }}>{value}</div>
+    </div>
+  );
+}
+function LoadingRow() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, color: T.muted, padding: "30px 0", justifyContent: "center", fontSize: 13 }}>
+      <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} /> 불러오는 중…
+    </div>
+  );
+}
+function ErrorRow({ message, onRetry }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: T.red, padding: "30px 0", fontSize: 13, textAlign: "center" }}>
+      <AlertCircle size={18} />
+      <span>{message}</span>
+      <button onClick={onRetry} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.text, borderRadius: 6, padding: "6px 14px", fontSize: 12, cursor: "pointer" }}>다시 시도</button>
+    </div>
+  );
+}
+
+/* ---------- 탭: 검수 대기함 ---------- */
+function ReviewQueue({ tenantId }) {
+  const [items, setItems] = useState(null);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState(null);
+
+  const load = useCallback(async () => {
+    setError(""); setItems(null);
+    try {
+      const data = await apiGet(`/contents?tenant_id=${encodeURIComponent(tenantId)}&status=pending`);
+      setItems(data.map(d => ({
+        id: d.id, author: d.author_name, type: d.content_type,
+        process: d.process_tag, equipment: d.equipment_tag, risk: d.risk_level, text: d.raw_text,
+      })));
+    } catch (e) { setError(e.message); }
+  }, [tenantId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const decide = async (id, status) => {
+    setBusyId(id);
+    try {
+      await apiPatch(`/contents/${id}/review`, { status, reviewed_by: "관리자" });
+      setItems(prev => prev.filter(i => i.id !== id));
+    } catch (e) { alert(`처리 실패: ${e.message}`); }
+    finally { setBusyId(null); }
+  };
+
+  if (items === null && !error) return <LoadingRow />;
+  if (error) return <ErrorRow message={error} onRetry={load} />;
+  if (items.length === 0) return <div style={{ color: T.muted, padding: "40px 0", textAlign: "center", fontSize: 14 }}>대기 중인 콘텐츠가 없습니다.</div>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {items.map(item => {
+        const Icon = TYPE_ICON[item.type] || FileText;
+        return (
+          <div key={item.id} style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ width: 32, height: 32, borderRadius: 6, background: T.panel2, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Icon size={16} color={T.amber} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{item.author}</div>
+                  <div style={{ fontSize: 12, color: T.muted, fontFamily: "ui-monospace, monospace" }}>
+                    {item.equipment || "설비 미지정"} · {item.process || "공정 미지정"}
+                  </div>
+                </div>
+              </div>
+              <Badge color={RISK_COLOR[item.risk] || T.muted}>{RISK_LABEL[item.risk] || item.risk}</Badge>
+            </div>
+            <p style={{ fontSize: 14, lineHeight: 1.7, color: T.text, margin: "14px 0 16px" }}>{item.text}</p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button disabled={busyId === item.id} onClick={() => decide(item.id, "approved")} style={{ display: "flex", alignItems: "center", gap: 6, background: T.teal, color: "#0B2B24", border: "none", borderRadius: 6, padding: "8px 14px", fontSize: 13, fontWeight: 500, cursor: busyId === item.id ? "default" : "pointer", opacity: busyId === item.id ? 0.6 : 1 }}><Check size={14} /> 승인</button>
+              <button disabled={busyId === item.id} onClick={() => decide(item.id, "rejected")} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: T.muted, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 14px", fontSize: 13, cursor: busyId === item.id ? "default" : "pointer", opacity: busyId === item.id ? 0.6 : 1 }}><X size={14} /> 반려</button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- 탭: 현황 통계 ---------- */
+function StatsPanel({ tenantId }) {
+  const [stats, setStats] = useState(null);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    setError(""); setStats(null);
+    try { setStats(await apiGet(`/admin/tenants/${encodeURIComponent(tenantId)}/stats?days=7`)); }
+    catch (e) { setError(e.message); }
+  }, [tenantId]);
+  useEffect(() => { load(); }, [load]);
+
+  if (stats === null && !error) return <LoadingRow />;
+  if (error) return <ErrorRow message={error} onRetry={load} />;
+
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        <StatCard label="승인된 노하우" value={stats.content_counts.approved} />
+        <StatCard label="검수 대기" value={stats.content_counts.pending} accent={T.amber} />
+        <StatCard label="최근 7일 질문" value={stats.queries_last_n_days} />
+        <StatCard label="저신뢰 답변" value={stats.low_confidence_answers} accent={T.amber} />
+        <StatCard label="부정 피드백" value={stats.negative_feedback} accent={T.red} />
+      </div>
+      <div style={{ marginTop: 16, background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 18, fontSize: 13, color: T.muted, lineHeight: 1.7 }}>
+        저신뢰 답변과 부정 피드백이 쌓이는 공정은 지식 공백 구간입니다.
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 탭: 미해결 질문 ---------- */
+function UnresolvedQueries({ tenantId }) {
+  const [items, setItems] = useState(null);
+  const [error, setError] = useState("");
+  const [requested, setRequested] = useState({});
+  const load = useCallback(async () => {
+    setError(""); setItems(null);
+    try { setItems(await apiGet(`/admin/tenants/${encodeURIComponent(tenantId)}/unresolved-queries`)); }
+    catch (e) { setError(e.message); }
+  }, [tenantId]);
+  useEffect(() => { load(); }, [load]);
+
+  if (items === null && !error) return <LoadingRow />;
+  if (error) return <ErrorRow message={error} onRetry={load} />;
+  if (items.length === 0) return <div style={{ color: T.muted, padding: "40px 0", textAlign: "center", fontSize: 14 }}>저신뢰/부정 피드백 질문이 없습니다.</div>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {items.map(q => (
+        <div key={q.id} style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 14 }}>{q.question}</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6 }}>
+              <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: T.muted }}>신뢰도 {Math.round((q.confidence || 0) * 100)}%</span>
+              {q.feedback === "down" && <span style={{ display: "flex", alignItems: "center", gap: 4, color: T.red, fontSize: 11 }}><ThumbsDown size={12} /> 부정 피드백</span>}
+            </div>
+          </div>
+          <button disabled={!!requested[q.id]} onClick={() => setRequested(prev => ({ ...prev, [q.id]: true }))} title="이 액션은 아직 백엔드 API가 없어 화면에서만 표시됩니다"
+            style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", background: requested[q.id] ? T.panel2 : T.amber, color: requested[q.id] ? T.muted : "#2B1B02", border: "none", borderRadius: 6, padding: "8px 12px", fontSize: 12, fontWeight: 500, cursor: requested[q.id] ? "default" : "pointer" }}>
+            <Send size={12} /> {requested[q.id] ? "요청됨" : "전문가에게 요청"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- 탭: 문서 업로드 ---------- */
+function DocumentUpload({ tenantId }) {
+  const [queue, setQueue] = useState([]);
+  const [processTag, setProcessTag] = useState("");
+  const [riskLevel, setRiskLevel] = useState("low");
+  const [autoApprove, setAutoApprove] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [docs, setDocs] = useState(null);
+  const [docsError, setDocsError] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const inputRef = useRef(null);
+
+  const loadDocs = useCallback(async () => {
+    setDocsError("");
+    try { setDocs(await apiGet(`/contents?tenant_id=${encodeURIComponent(tenantId)}&content_type=document`)); }
+    catch (e) { setDocsError(e.message); }
+  }, [tenantId]);
+  useEffect(() => { loadDocs(); }, [loadDocs]);
+
+  const addFiles = (fileList) => {
+    const accepted = Array.from(fileList).filter(f => /\.(pdf|docx|txt|md)$/i.test(f.name));
+    setQueue(prev => [...prev, ...accepted.map(file => ({ file, status: "대기중", message: "" }))]);
+  };
+
+  const startUpload = async () => {
+    setUploading(true);
+    for (let i = 0; i < queue.length; i++) {
+      if (queue[i].status === "완료") continue;
+      setQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: "업로드 중" } : q));
+      const form = new FormData();
+      form.append("tenant_id", tenantId);
+      form.append("author_name", "관리자");
+      form.append("process_tag", processTag);
+      form.append("risk_level", riskLevel);
+      form.append("auto_approve", String(autoApprove));
+      form.append("file", queue[i].file);
+      try {
+        const result = await apiUpload("/contents/upload", form);
+        setQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: "완료", message: `${result.chunks_indexed}개 청크로 색인됨` } : q));
+      } catch (e) {
+        setQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: "실패", message: e.message } : q));
+      }
+    }
+    setUploading(false);
+    loadDocs();
+  };
+
+  const removeDoc = async (id) => {
+    if (!confirm("이 문서를 삭제할까요? 색인된 검색 데이터도 함께 삭제됩니다.")) return;
+    try { await apiDelete(`/contents/${id}`); loadDocs(); }
+    catch (e) { alert(`삭제 실패: ${e.message}`); }
+  };
+
+  const statusColor = { "대기중": T.muted, "업로드 중": T.amber, "완료": T.teal, "실패": T.red };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <input value={processTag} onChange={e => setProcessTag(e.target.value)} placeholder="카테고리 (예: 안전관리, 장비매뉴얼)"
+          style={{ background: T.panel2, border: `1px solid ${T.border}`, color: T.text, borderRadius: 6, padding: "8px 10px", fontSize: 12, outline: "none", minWidth: 160 }} />
+        <select value={riskLevel} onChange={e => setRiskLevel(e.target.value)} style={{ background: T.panel2, border: `1px solid ${T.border}`, color: T.text, borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
+          <option value="low">위험도: 낮음</option>
+          <option value="medium">위험도: 주의</option>
+          <option value="high">위험도: 위험</option>
+        </select>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: T.muted }}>
+          <input type="checkbox" checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
+          업로드 즉시 승인(자동 게시)
+        </label>
+      </div>
+
+      <div onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
+        onDrop={e => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }} onClick={() => inputRef.current?.click()}
+        style={{ border: `1.5px dashed ${dragOver ? T.teal : T.border}`, borderRadius: 10, padding: "36px 20px", textAlign: "center", cursor: "pointer", background: dragOver ? T.panel2 : T.panel }}>
+        <UploadCloud size={26} color={T.muted} style={{ marginBottom: 8 }} />
+        <div style={{ fontSize: 13, color: T.text }}>클릭하거나 파일을 끌어다 놓으세요</div>
+        <div style={{ fontSize: 11, color: T.muted, marginTop: 4 }}>PDF · DOCX · TXT · MD (여러 개 동시 선택 가능)</div>
+        <input ref={inputRef} type="file" multiple hidden accept=".pdf,.docx,.txt,.md" onChange={e => addFiles(e.target.files)} />
+      </div>
+
+      {queue.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {queue.map((q, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "10px 14px" }}>
+              <FileIcon size={15} color={T.muted} />
+              <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.file.name}</span>
+              <span style={{ fontSize: 11, color: statusColor[q.status], fontFamily: "ui-monospace, monospace" }}>{q.status}{q.message ? ` · ${q.message}` : ""}</span>
+            </div>
+          ))}
+          <button disabled={uploading} onClick={startUpload} style={{ alignSelf: "flex-start", background: uploading ? T.panel2 : T.teal, color: uploading ? T.muted : "#0B2B24", border: "none", borderRadius: 6, padding: "9px 18px", fontSize: 13, fontWeight: 500, cursor: uploading ? "default" : "pointer" }}>
+            {uploading ? "업로드 중…" : `${queue.filter(q => q.status !== "완료").length}개 파일 업로드 시작`}
+          </button>
+        </div>
+      )}
+
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, color: T.text }}>등록된 문서</div>
+          {docs && docs.length > 0 && (
+            <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} style={{
+              background: T.panel2, border: `1px solid ${T.border}`, color: T.text,
+              borderRadius: 6, padding: "5px 8px", fontSize: 12,
+            }}>
+              <option value="">전체 카테고리</option>
+              {[...new Set(docs.map(d => d.process_tag).filter(Boolean))].sort().map(cat => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          )}
+        </div>
+        {docsError ? <ErrorRow message={docsError} onRetry={loadDocs} />
+          : docs === null ? <LoadingRow />
+          : docs.filter(d => !categoryFilter || d.process_tag === categoryFilter).length === 0
+            ? <div style={{ color: T.muted, padding: "20px 0", textAlign: "center", fontSize: 13 }}>
+                {categoryFilter ? "이 카테고리에 등록된 문서가 없습니다." : "등록된 문서가 없습니다."}
+              </div>
+          : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {docs.filter(d => !categoryFilter || d.process_tag === categoryFilter).map(d => (
+                <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "10px 14px" }}>
+                  <FileText size={15} color={T.amber} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{d.process_tag || "카테고리 미지정"}</div>
+                    <div style={{ fontSize: 11, color: T.muted }}>{new Date(d.created_at).toLocaleString("ko-KR")}</div>
+                  </div>
+                  <Badge color={d.status === "approved" ? T.teal : T.amber}>{d.status === "approved" ? "게시중" : "대기중"}</Badge>
+                  <button onClick={() => removeDoc(d.id)} style={{ background: "transparent", border: "none", color: T.muted, cursor: "pointer", padding: 4 }}><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 테넌트 프로필 저장/전환 (카카오 채널이 여러 개일 때) ---------- */
+const PROFILES_KEY = "damal_admin_profiles";
+const ACTIVE_KEY = "damal_admin_active_id";
+
+function loadProfiles() {
+  try { return JSON.parse(localStorage.getItem(PROFILES_KEY)) || []; }
+  catch { return []; }
+}
+function saveProfiles(list) {
+  try { localStorage.setItem(PROFILES_KEY, JSON.stringify(list)); } catch {}
+}
+
+function TenantSwitcher({ onChange }) {
+  const [profiles, setProfiles] = useState(() => loadProfiles());
+  const [activeId, setActiveId] = useState(() => {
+    try { return localStorage.getItem(ACTIVE_KEY) || ""; } catch { return ""; }
+  });
+  const [editing, setEditing] = useState(profiles.length === 0); // 폼 표시 여부 (처음이면 바로 열어둠)
+  const [editId, setEditId] = useState(null); // null=새로 추가, 아니면 그 id를 수정 중
+  const [formName, setFormName] = useState("");
+  const [formTenantId, setFormTenantId] = useState("");
+
+  // 최초 로드 시: 마지막으로 쓰던 테넌트가 있으면 자동으로 불러오기 ("자동 로그인")
+  useEffect(() => {
+    const active = profiles.find(p => p.id === activeId);
+    if (active) onChange(active.tenantId);
+  }, []); // eslint-disable-line
+
+  const persist = (list) => { setProfiles(list); saveProfiles(list); };
+
+  const selectProfile = (id) => {
+    setActiveId(id);
+    try { localStorage.setItem(ACTIVE_KEY, id); } catch {}
+    const p = profiles.find(x => x.id === id);
+    if (p) onChange(p.tenantId);
+  };
+
+  const openAdd = () => { setEditId(null); setFormName(""); setFormTenantId(""); setEditing(true); };
+  const openEdit = () => {
+    const p = profiles.find(x => x.id === activeId);
+    if (!p) return;
+    setEditId(p.id); setFormName(p.name); setFormTenantId(p.tenantId); setEditing(true);
+  };
+
+  const submitForm = () => {
+    const name = formName.trim() || "이름없음";
+    const tid = formTenantId.trim();
+    if (!tid) return;
+    if (editId) {
+      const list = profiles.map(p => p.id === editId ? { ...p, name, tenantId: tid } : p);
+      persist(list);
+      selectProfile(editId);
+    } else {
+      const id = "t" + Date.now();
+      const list = [...profiles, { id, name, tenantId: tid }];
+      persist(list);
+      selectProfile(id);
+    }
+    setEditing(false);
+  };
+
+  const deleteActive = () => {
+    if (!activeId) return;
+    if (!confirm("이 테넌트 프로필을 목록에서 삭제할까요? (백엔드 데이터는 삭제되지 않습니다)")) return;
+    const list = profiles.filter(p => p.id !== activeId);
+    persist(list);
+    setActiveId("");
+    try { localStorage.removeItem(ACTIVE_KEY); } catch {}
+    onChange("");
+    setEditing(list.length === 0);
+  };
+
+  if (editing) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <input value={formName} onChange={e => setFormName(e.target.value)} placeholder="이름 (예: 서울공장 채널)"
+          style={{ background: T.panel2, border: `1px solid ${T.border}`, color: T.text, borderRadius: 6, padding: "6px 10px", fontSize: 12, width: 140, outline: "none" }} />
+        <input value={formTenantId} onChange={e => setFormTenantId(e.target.value)} placeholder="tenant_id 붙여넣기"
+          style={{ background: T.panel2, border: `1px solid ${T.border}`, color: T.text, borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "ui-monospace, monospace", width: 200, outline: "none" }} />
+        <button onClick={submitForm} style={{ background: T.teal, color: "#0B2B24", border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 12, fontWeight: 500, cursor: "pointer" }}>저장</button>
+        {profiles.length > 0 && (
+          <button onClick={() => setEditing(false)} style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.muted, borderRadius: 6, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>취소</button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <select value={activeId} onChange={e => selectProfile(e.target.value)} style={{
+        background: T.panel2, border: `1px solid ${T.border}`, color: T.text, borderRadius: 6,
+        padding: "6px 10px", fontSize: 12, minWidth: 160,
+      }}>
+        <option value="" disabled>테넌트 선택…</option>
+        {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+      <button onClick={openEdit} disabled={!activeId} title="이름/ID 수정" style={{
+        background: "transparent", border: `1px solid ${T.border}`, color: activeId ? T.text : T.border,
+        borderRadius: 6, padding: "6px 9px", fontSize: 12, cursor: activeId ? "pointer" : "default",
+      }}>✏️</button>
+      <button onClick={deleteActive} disabled={!activeId} title="삭제" style={{
+        background: "transparent", border: `1px solid ${T.border}`, color: activeId ? T.red : T.border,
+        borderRadius: 6, padding: "6px 9px", fontSize: 12, cursor: activeId ? "pointer" : "default",
+      }}><Trash2 size={12} /></button>
+      <button onClick={openAdd} title="새 테넌트 추가" style={{
+        background: "transparent", border: `1px solid ${T.border}`, color: T.text,
+        borderRadius: 6, padding: "6px 9px", fontSize: 12, cursor: "pointer",
+      }}>+ 추가</button>
+    </div>
+  );
+}
+
+/* ---------- 루트 ---------- */
+function AdminDashboard() {
+  const [tab, setTab] = useState("queue");
+  const [tenantId, setTenantId] = useState("");
+
+  const tabs = useMemo(() => ([
+    { key: "queue", label: "검수 대기함" },
+    { key: "documents", label: "문서 업로드" },
+    { key: "stats", label: "현황 통계" },
+    { key: "unresolved", label: "미해결 질문" },
+  ]), []);
+
+  return (
+    <div style={{ background: T.bg, color: T.text, minHeight: 560, fontFamily: "system-ui, sans-serif", borderRadius: 12, overflow: "hidden", border: `1px solid ${T.border}` }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 20px", borderBottom: `1px solid ${T.border}`, background: T.panel, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Radio size={16} color={T.amber} />
+          <span style={{ fontWeight: 500, fontSize: 14, letterSpacing: 0.3 }}>다말 관리자</span>
+        </div>
+        <TenantSwitcher onChange={setTenantId} />
+      </div>
+
+      {!tenantId ? (
+        <div style={{ padding: "60px 20px", textAlign: "center", color: T.muted, fontSize: 13 }}>
+          위에서 테넌트를 추가하거나 선택해주세요.<br />
+          (백엔드에 <code style={{ color: T.text }}>POST /admin/tenants</code>로 생성했을 때 응답받은 <code style={{ color: T.text }}>id</code> 값을 이름과 함께 저장해두면, 다음부터는 자동으로 불러옵니다. 카카오톡 채널이 여러 개면 채널마다 하나씩 추가하세요.)
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 4, padding: "10px 16px 0", borderBottom: `1px solid ${T.border}` }}>
+            {tabs.map(t => (
+              <button key={t.key} onClick={() => setTab(t.key)} style={{ background: "transparent", border: "none", cursor: "pointer", color: tab === t.key ? T.text : T.muted, borderBottom: tab === t.key ? `2px solid ${T.amber}` : "2px solid transparent", padding: "8px 10px", fontSize: 13 }}>{t.label}</button>
+            ))}
+          </div>
+          <div style={{ padding: 20 }}>
+            {tab === "queue" && <ReviewQueue tenantId={tenantId} />}
+            {tab === "documents" && <DocumentUpload tenantId={tenantId} />}
+            {tab === "stats" && <StatsPanel tenantId={tenantId} />}
+            {tab === "unresolved" && <UnresolvedQueries tenantId={tenantId} />}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<AdminDashboard />);
+</script>
+
+<style>
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</body>
+</html>

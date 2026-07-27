@@ -13,15 +13,22 @@
 callbackUrl로 결과를 다시 POST한다 (콜백 URL 유효시간 1분).
 전환 전(테스트 단계)에는 callbackUrl이 없으므로 기존처럼 동기 방식으로 응답한다.
 """
+import re
 import httpx
 from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.db import get_db, SessionLocal
-from app.models import QueryLog
+from app.models import QueryLog, ExpertContent
 from app.rag import retrieve, generate_answer
 
 router = APIRouter(prefix="/kakao", tags=["kakao"])
+
+# "등록: 내용" 또는 "노하우등록: [카테고리] 내용" 형태의 메시지를 감지한다.
+# 예) "등록: 화기 작업 전 반드시 안전관리자 허가를 받는다"
+#     "등록: [안전관리] 화기 작업 전 반드시 안전관리자 허가를 받는다"
+REGISTER_RE = re.compile(r"^(?:등록|노하우\s*등록|제보)\s*[:：]\s*(.+)", re.DOTALL)
+CATEGORY_RE = re.compile(r"^\[(.+?)\]\s*(.+)$", re.DOTALL)
 
 
 def _kakao_text_response(text: str, query_log_id: str) -> dict:
@@ -84,6 +91,38 @@ def _process_and_callback(tenant_id: str, utterance: str, user_key: str, callbac
         print(f"[kakao callback] 콜백 전송 실패: {e}")
 
 
+def _handle_registration(db: Session, tenant_id: str, user_key: str, body: str) -> dict:
+    """카카오톡 대화 중 '등록: ...' 형태의 메시지를 노하우 콘텐츠로 저장.
+    다말 앱을 안 쓰는 현장 사용자도 카카오톡만으로 제보할 수 있게 하는 경로.
+    다말 앱 등록과 동일하게 'pending' 상태로 저장되어, 관리자 검수 후에만 챗봇 답변에 반영된다."""
+    category = None
+    cat_match = CATEGORY_RE.match(body)
+    if cat_match:
+        category = cat_match.group(1).strip()
+        body = cat_match.group(2).strip()
+
+    content = ExpertContent(
+        tenant_id=tenant_id,
+        author_name=f"카카오톡 제보({user_key})" if user_key else "카카오톡 제보",
+        content_type="text",
+        raw_text=body,
+        process_tag=category,
+        risk_level="low",  # 텍스트만으로는 위험도 판단이 어려워 기본값 낮음으로 저장, 관리자가 검수 시 조정
+        status="pending",
+    )
+    db.add(content)
+    db.commit()
+    db.refresh(content)
+
+    preview = body if len(body) <= 200 else body[:200] + "…"
+    return {
+        "version": "2.0",
+        "template": {"outputs": [{"simpleText": {
+            "text": f"노하우 등록 감사합니다! 🙌 관리자 검토 후 반영됩니다.\n\n[등록 내용]\n{preview}"
+        }}]},
+    }
+
+
 @router.post("/webhook/{tenant_id}")
 async def kakao_webhook(
     tenant_id: str,
@@ -110,8 +149,16 @@ async def kakao_webhook(
 
     if callback_url:
         # AI 챗봇 전환 완료 - 콜백 방식 (5초 제한 없음)
+        register_match = REGISTER_RE.match(utterance)
+        if register_match:
+            # 등록은 DB 저장만 하면 되는 가벼운 작업이라 콜백 없이 바로 응답 (5초 내 충분)
+            return _handle_registration(db, tenant_id, user_key, register_match.group(1).strip())
         background_tasks.add_task(_process_and_callback, tenant_id, utterance, user_key, callback_url)
         return {"version": "2.0", "useCallback": True}
+
+    register_match = REGISTER_RE.match(utterance)
+    if register_match:
+        return _handle_registration(db, tenant_id, user_key, register_match.group(1).strip())
 
     # 콜백 미승인 상태 - 기존 동기 방식 (5초 안에 못 끝내면 타임아웃 날 수 있음)
     retrieved = retrieve(db, tenant_id, utterance)
