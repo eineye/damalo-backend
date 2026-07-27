@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db, SessionLocal
 from app.models import QueryLog, ExpertContent
-from app.rag import retrieve, generate_answer
+from app.rag import retrieve, generate_answer, ingest_content
 
 router = APIRouter(prefix="/kakao", tags=["kakao"])
 
@@ -94,7 +94,9 @@ def _process_and_callback(tenant_id: str, utterance: str, user_key: str, callbac
 def _handle_registration(db: Session, tenant_id: str, user_key: str, body: str) -> dict:
     """카카오톡 대화 중 '등록: ...' 형태의 메시지를 노하우 콘텐츠로 저장.
     다말 앱을 안 쓰는 현장 사용자도 카카오톡만으로 제보할 수 있게 하는 경로.
-    다말 앱 등록과 동일하게 'pending' 상태로 저장되어, 관리자 검수 후에만 챗봇 답변에 반영된다."""
+    위험도를 '낮음'으로 두고 즉시 자동 승인해 바로 챗봇 답변에 반영한다
+    (카카오톡 대화에는 위험도를 직접 고르는 화면이 없어 항상 '낮음'으로 저장됨 -
+     안전이 우려되는 내용이면 관리자가 검수 화면에서 사후에 위험도를 올리고 반려할 수 있다)."""
     category = None
     cat_match = CATEGORY_RE.match(body)
     if cat_match:
@@ -107,18 +109,20 @@ def _handle_registration(db: Session, tenant_id: str, user_key: str, body: str) 
         content_type="text",
         raw_text=body,
         process_tag=category,
-        risk_level="low",  # 텍스트만으로는 위험도 판단이 어려워 기본값 낮음으로 저장, 관리자가 검수 시 조정
-        status="pending",
+        risk_level="low",
+        status="approved",
+        reviewed_by="자동승인(카카오톡 등록)",
     )
     db.add(content)
     db.commit()
     db.refresh(content)
+    ingest_content(db, content)
 
     preview = body if len(body) <= 200 else body[:200] + "…"
     return {
         "version": "2.0",
         "template": {"outputs": [{"simpleText": {
-            "text": f"노하우 등록 감사합니다! 🙌 관리자 검토 후 반영됩니다.\n\n[등록 내용]\n{preview}"
+            "text": f"노하우 등록 감사합니다! 🙌 바로 반영되어 다른 분들 질문에도 활용됩니다.\n\n[등록 내용]\n{preview}"
         }}]},
     }
 

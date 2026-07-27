@@ -14,11 +14,22 @@ router = APIRouter(prefix="/contents", tags=["contents"])
 def create_content(payload: ContentCreate, db: Session = Depends(get_db)):
     """전문가 노하우 입력 (모바일 앱에서 호출).
     음성/영상은 STT 처리 후 raw_text에 텍스트를 담아 이 엔드포인트를 호출한다고 가정.
-    신규 콘텐츠는 기본적으로 'pending' 상태 -> 관리자 승인 전까지 챗봇 검색에 노출되지 않음."""
-    content = ExpertContent(**payload.model_dump())
+    위험도가 '낮음'이면 즉시 자동 승인되어 바로 챗봇 검색에 반영된다 (관리자 검수 부담 경감).
+    '주의/위험'은 안전 문제가 될 수 있어 지금처럼 관리자 검수를 거친다."""
+    data = payload.model_dump()
+    auto = data.get("risk_level", "low") == "low"
+    data["status"] = "approved" if auto else "pending"
+    if auto:
+        data["reviewed_by"] = "자동승인(낮음 위험도)"
+
+    content = ExpertContent(**data)
     db.add(content)
     db.commit()
     db.refresh(content)
+
+    if auto:
+        ingest_content(db, content)
+
     return {"id": content.id, "status": content.status}
 
 
